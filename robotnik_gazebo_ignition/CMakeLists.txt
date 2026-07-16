@@ -17,6 +17,9 @@ install(
   PROGRAMS
     scripts/stop_gazebo_sim.sh
   DESTINATION lib/${PROJECT_NAME}
+)
+
+install(
   DIRECTORY config launch models worlds scripts
   DESTINATION share/${PROJECT_NAME}/
 )
