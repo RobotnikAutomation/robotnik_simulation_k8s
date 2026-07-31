@@ -1,0 +1,49 @@
+name: simulation
+
+services:
+  simulation:
+    container_name: simulation
+    image: ${ROBOTNIK_SIMULATION_IMAGE:-robotnik/simulation-gz:jazzy}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        USER_UID: ${LOCAL_UID:-1000}
+        USER_GID: ${LOCAL_GID:-1000}
+    network_mode: host
+    ipc: host
+    privileged: true
+    stdin_open: true
+    tty: true
+    environment:
+      DISPLAY: ${DISPLAY}
+      ROS_DISTRO: jazzy
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-30}
+      WORKSPACE_DIR: /opt/robotnik_ws
+      RUNTIME_AUTOSTART: ${RUNTIME_AUTOSTART:-true}
+      ROBOTNIK_ENV_FILE: /opt/robotnik/config/env/robot.env
+      ROBOTNIK_LAUNCH_ARGS_WORLD: ${ROBOTNIK_LAUNCH_ARGS_WORLD:-gui:=true world_path:=/opt/robotnik/custom_worlds/demo.world}
+      ROBOTNIK_LAUNCH_ARGS_ROBOT: ${ROBOTNIK_LAUNCH_ARGS_ROBOT:-robot:=rbkairos robot_model:=rbkairos_plus robot_xacro_path:=/opt/robotnik_ws/install/share/robotnik_description/robots/rbkairos/rbkairos_plus.urdf.xacro arm_type:=ur10e run_rviz:=false}
+    command:
+      - /bin/bash
+      - -lc
+      - |
+        set -eo pipefail
+        source /opt/ros/$${ROS_DISTRO}/setup.bash
+        source /opt/robotnik_ws/install/setup.bash
+        if [ -f /opt/robotnik/config/env/robot.env ]; then
+          set -a
+          source /opt/robotnik/config/env/robot.env
+          set +a
+        fi
+        read -r -a world_args <<< "$${ROBOTNIK_LAUNCH_ARGS_WORLD}"
+        read -r -a robot_args <<< "$${ROBOTNIK_LAUNCH_ARGS_ROBOT}"
+        ros2 launch robotnik_gazebo_ignition spawn_world.launch.py "$${world_args[@]}" &
+        sleep 10
+        ros2 launch robotnik_gazebo_ignition spawn_robot.launch.py "$${robot_args[@]}"
+    devices:
+      - /dev/dri:/dev/dri
+    volumes:
+      - ../../env/robot.env:/opt/robotnik/config/env/robot.env:ro
+      - ../../robotnik_gazebo_ignition/worlds/demo.world:/opt/robotnik/custom_worlds/demo.world:ro
+      - /tmp/.X11-unix:/tmp/.X11-unix

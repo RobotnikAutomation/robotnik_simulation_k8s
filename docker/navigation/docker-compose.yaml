@@ -1,0 +1,50 @@
+name: navigation
+
+services:
+  navigation:
+    container_name: navigation
+    image: ${ROBOTNIK_SIMULATION_IMAGE:-robotnik/simulation-gz:jazzy}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        USER_UID: ${LOCAL_UID:-1000}
+        USER_GID: ${LOCAL_GID:-1000}
+    network_mode: host
+    ipc: host
+    privileged: true
+    stdin_open: true
+    tty: true
+    environment:
+      DISPLAY: ${DISPLAY}
+      ROS_DISTRO: jazzy
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-30}
+      WORKSPACE_DIR: /opt/robotnik_ws
+      RUNTIME_AUTOSTART: ${RUNTIME_AUTOSTART:-true}
+      ROBOTNIK_ENV_FILE: /opt/robotnik/config/env/robot.env
+      ROBOTNIK_LAUNCH_PACKAGE: ${ROBOTNIK_LAUNCH_PACKAGE:-robotnik_simulation_navigation}
+      ROBOTNIK_LAUNCH_FILE: ${ROBOTNIK_LAUNCH_FILE:-navigation.launch.py}
+      ROBOTNIK_LAUNCH_ARGS: ${ROBOTNIK_LAUNCH_ARGS:-robot_id:=robot use_sim:=true}
+      ROBOTNIK_RVIZ_ARGS: ${ROBOTNIK_RVIZ_ARGS:-robot_id:=robot use_sim:=true rviz_name:=rviz_nav}
+    command:
+      - /bin/bash
+      - -lc
+      - |
+        set -eo pipefail
+        source /opt/ros/$${ROS_DISTRO}/setup.bash
+        source /opt/robotnik_ws/install/setup.bash
+        if [ -f /opt/robotnik/config/env/robot.env ]; then
+          set -a
+          source /opt/robotnik/config/env/robot.env
+          set +a
+        fi
+        read -r -a nav_args <<< "$${ROBOTNIK_LAUNCH_ARGS}"
+        read -r -a rviz_args <<< "$${ROBOTNIK_RVIZ_ARGS}"
+        ros2 launch "$${ROBOTNIK_LAUNCH_PACKAGE}" "$${ROBOTNIK_LAUNCH_FILE}" "$${nav_args[@]}" &
+        sleep 2
+        ros2 launch robotnik_simulation_bringup rviz.launch.py "$${rviz_args[@]}"
+    devices:
+      - /dev/dri:/dev/dri
+    volumes:
+      - ../../env/robot.env:/opt/robotnik/config/env/robot.env:ro
+      - /tmp/.X11-unix:/tmp/.X11-unix

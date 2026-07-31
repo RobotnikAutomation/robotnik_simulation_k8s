@@ -1,0 +1,520 @@
+# =============================================================================
+# Robotnik Simulation – Kubernetes Manifests
+# Equivalent to: docker/docker-compose.yaml
+#
+# Services translated:
+#   simulation   – Gazebo world + robot spawn
+#   localization – nav2 AMCL / localization stack
+#   navigation   – nav2 navigation + RViz
+#   manipulation – MoveIt2 + MoveIt RViz
+#
+# Prerequisites:
+#   ./create-configmaps.sh   (creates robot-env-config and demo-world-config)
+#
+# Key Kubernetes equivalents:
+#   network_mode: host  → hostNetwork: true
+#   ipc: host           → hostIPC: true
+#   privileged: true    → securityContext.privileged: true
+#   devices /dev/dri    → hostPath volume
+#   /tmp/.X11-unix      → hostPath volume
+#   depends_on          → initContainer kubectl wait (RBAC required)
+#   ../env/robot.env    → ConfigMap robot-env-config
+#   demo.world          → ConfigMap demo-world-config
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# RBAC – allow initContainers to watch Deployments via kubectl wait
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: robotnik-deployer
+  labels:
+    app.kubernetes.io/part-of: robotnik-simulation
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: robotnik-deployment-reader
+  labels:
+    app.kubernetes.io/part-of: robotnik-simulation
+rules:
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: robotnik-deployment-reader
+  labels:
+    app.kubernetes.io/part-of: robotnik-simulation
+subjects:
+- kind: ServiceAccount
+  name: robotnik-deployer
+  namespace: default
+roleRef:
+  kind: ClusterRole
+  name: robotnik-deployment-reader
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# ---------------------------------------------------------------------------
+# ConfigMap – robot.env
+# Source of truth: env/robot.env  (managed by create-configmaps.sh)
+# This inline copy is a fallback reference; the script-generated ConfigMap
+# takes precedence when applied with --dry-run=client | kubectl apply.
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: robot-env-config
+  labels:
+    app.kubernetes.io/part-of: robotnik-simulation
+data:
+  robot.env: |
+    ROBOT_ID=robot
+    ROBOT=rbwatcher
+    ROBOT_MODEL=rbwatcher
+    ROBOT_XACRO_PATH=
+    USE_GUI=true
+    USE_RVIZ=true
+    LOW_PERFORMANCE_SIMULATION=true
+    RUN_MOVEIT=false
+    ARM_TYPE=ur10e
+    WORLD=demo
+    WORLD_PATH=
+    FRAME_PREFIX=
+
+---
+# ---------------------------------------------------------------------------
+# Deployment – simulation
+# Launches Gazebo world + spawns the robot.
+# Equivalent to the "simulation" service in docker-compose.yaml.
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: simulation
+  labels:
+    app: simulation
+    app.kubernetes.io/part-of: robotnik-simulation
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: simulation
+  template:
+    metadata:
+      labels:
+        app: simulation
+    spec:
+      hostNetwork: true   # equivalent to network_mode: host
+      hostIPC: true       # equivalent to ipc: host
+      # Pin to a node that has a running X11 display.
+      # Label the target node first:
+      #   kubectl label nodes <NODE_NAME> nodetype=edgeserver
+      # Then uncomment the nodeSelector below.
+      # nodeSelector:
+      #   nodetype: edgeserver
+      containers:
+      - name: simulation
+        image: robotnik/simulation-gz:jazzy
+        imagePullPolicy: IfNotPresent
+        stdin: true
+        tty: true
+        securityContext:
+          privileged: true   # required for GPU / DRI device access
+        # Marks the pod Ready only once the gz sim process is running.
+        # Dependent pods (localization etc.) use kubectl wait on this condition.
+        readinessProbe:
+          exec:
+            command: ["pgrep", "-f", "gz sim"]
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          failureThreshold: 18   # allow up to ~3 min for Gazebo to start
+        env:
+        - name: DISPLAY
+          value: ":1"        # must match the X display on the host node
+        - name: ROS_DISTRO
+          value: "jazzy"
+        - name: ROS_DOMAIN_ID
+          value: "30"
+        - name: WORKSPACE_DIR
+          value: "/opt/robotnik_ws"
+        - name: RUNTIME_AUTOSTART
+          value: "true"
+        - name: ROBOTNIK_ENV_FILE
+          value: "/opt/robotnik/config/env/robot.env"
+        - name: ROBOTNIK_LAUNCH_ARGS_WORLD
+          value: "gui:=true world_path:=/opt/robotnik/custom_worlds/demo.world"
+        - name: ROBOTNIK_LAUNCH_ARGS_ROBOT
+          value: "robot:=rbkairos robot_model:=rbkairos_plus robot_xacro_path:=/opt/robotnik_ws/install/share/robotnik_description/robots/rbkairos/rbkairos_plus.urdf.xacro arm_type:=ur10e run_rviz:=false"
+        command: ["/bin/bash", "-lc"]
+        args:
+        - |
+          set -eo pipefail
+          source /opt/ros/${ROS_DISTRO}/setup.bash
+          source /opt/robotnik_ws/install/setup.bash
+          if [ -f /opt/robotnik/config/env/robot.env ]; then
+            set -a
+            source /opt/robotnik/config/env/robot.env
+            set +a
+          fi
+          read -r -a world_args <<< "${ROBOTNIK_LAUNCH_ARGS_WORLD}"
+          read -r -a robot_args <<< "${ROBOTNIK_LAUNCH_ARGS_ROBOT}"
+          ros2 launch robotnik_gazebo_ignition spawn_world.launch.py "${world_args[@]}" &
+          sleep 5
+          ros2 launch robotnik_gazebo_ignition spawn_robot.launch.py "${robot_args[@]}"
+        volumeMounts:
+        - name: robot-env
+          mountPath: /opt/robotnik/config/env/robot.env
+          subPath: robot.env
+          readOnly: true
+        - name: demo-world
+          mountPath: /opt/robotnik/custom_worlds/demo.world
+          subPath: demo.world
+          readOnly: true
+        - name: x11-socket
+          mountPath: /tmp/.X11-unix
+        - name: dev-dri
+          mountPath: /dev/dri
+      volumes:
+      - name: robot-env
+        configMap:
+          name: robot-env-config
+      - name: demo-world
+        configMap:
+          name: demo-world-config
+      - name: x11-socket
+        hostPath:
+          path: /tmp/.X11-unix
+          type: DirectoryOrCreate
+      - name: dev-dri
+        hostPath:
+          path: /dev/dri
+          type: DirectoryOrCreate
+
+---
+# ---------------------------------------------------------------------------
+# Deployment – localization
+# Runs the localization stack after simulation has started.
+# Equivalent to the "localization" service in docker-compose.yaml.
+# depends_on: simulation  →  initContainer sleep 30s
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: localization
+  labels:
+    app: localization
+    app.kubernetes.io/part-of: robotnik-simulation
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: localization
+  template:
+    metadata:
+      labels:
+        app: localization
+    spec:
+      hostNetwork: true
+      hostIPC: true
+      # nodeSelector:
+      #   nodetype: edgeserver
+      serviceAccountName: robotnik-deployer
+      initContainers:
+      - name: wait-for-simulation
+        image: busybox:stable
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - |
+          until /kubectl wait --for=condition=available --timeout=10s deployment/simulation 2>/dev/null; do
+            echo "Waiting for simulation to be available..."
+            sleep 5
+          done
+        volumeMounts:
+        - name: kubectl-bin
+          mountPath: /kubectl
+          readOnly: true
+      containers:
+      - name: localization
+        image: robotnik/simulation-gz:jazzy
+        imagePullPolicy: IfNotPresent
+        stdin: true
+        tty: true
+        securityContext:
+          privileged: true
+        env:
+        - name: DISPLAY
+          value: ":1"
+        - name: ROS_DISTRO
+          value: "jazzy"
+        - name: ROS_DOMAIN_ID
+          value: "30"
+        - name: WORKSPACE_DIR
+          value: "/opt/robotnik_ws"
+        - name: RUNTIME_AUTOSTART
+          value: "true"
+        - name: ROBOTNIK_ENV_FILE
+          value: "/opt/robotnik/config/env/robot.env"
+        - name: ROBOTNIK_LAUNCH_PACKAGE
+          value: "robotnik_simulation_localization"
+        - name: ROBOTNIK_LAUNCH_FILE
+          value: "localization.launch.py"
+        - name: ROBOTNIK_LAUNCH_ARGS
+          value: "robot_id:=robot use_sim:=true"
+        command: ["/bin/bash", "-lc"]
+        args:
+        - "sleep 10 && exec /usr/local/bin/runtime-entrypoint.sh"
+        volumeMounts:
+        - name: robot-env
+          mountPath: /opt/robotnik/config/env/robot.env
+          subPath: robot.env
+          readOnly: true
+        - name: x11-socket
+          mountPath: /tmp/.X11-unix
+        - name: dev-dri
+          mountPath: /dev/dri
+      volumes:
+      - name: robot-env
+        configMap:
+          name: robot-env-config
+      - name: x11-socket
+        hostPath:
+          path: /tmp/.X11-unix
+          type: DirectoryOrCreate
+      - name: dev-dri
+        hostPath:
+          path: /dev/dri
+          type: DirectoryOrCreate
+      - name: kubectl-bin
+        hostPath:
+          path: /usr/bin/kubectl
+          type: File
+
+---
+# ---------------------------------------------------------------------------
+# Deployment – navigation
+# Runs nav2 navigation + RViz after localization has started.
+# Equivalent to the "navigation" service in docker-compose.yaml.
+# depends_on: localization  →  initContainer sleep 60s
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: navigation
+  labels:
+    app: navigation
+    app.kubernetes.io/part-of: robotnik-simulation
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: navigation
+  template:
+    metadata:
+      labels:
+        app: navigation
+    spec:
+      hostNetwork: true
+      hostIPC: true
+      # nodeSelector:
+      #   nodetype: edgeserver
+      serviceAccountName: robotnik-deployer
+      initContainers:
+      - name: wait-for-localization
+        image: busybox:stable
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - |
+          until /kubectl wait --for=condition=available --timeout=10s deployment/localization 2>/dev/null; do
+            echo "Waiting for localization to be available..."
+            sleep 5
+          done
+        volumeMounts:
+        - name: kubectl-bin
+          mountPath: /kubectl
+          readOnly: true
+      containers:
+      - name: navigation
+        image: robotnik/simulation-gz:jazzy
+        imagePullPolicy: IfNotPresent
+        stdin: true
+        tty: true
+        securityContext:
+          privileged: true
+        env:
+        - name: DISPLAY
+          value: ":1"
+        - name: ROS_DISTRO
+          value: "jazzy"
+        - name: ROS_DOMAIN_ID
+          value: "30"
+        - name: WORKSPACE_DIR
+          value: "/opt/robotnik_ws"
+        - name: RUNTIME_AUTOSTART
+          value: "true"
+        - name: ROBOTNIK_ENV_FILE
+          value: "/opt/robotnik/config/env/robot.env"
+        - name: ROBOTNIK_LAUNCH_PACKAGE
+          value: "robotnik_simulation_navigation"
+        - name: ROBOTNIK_LAUNCH_FILE
+          value: "navigation.launch.py"
+        - name: ROBOTNIK_LAUNCH_ARGS
+          value: "robot_id:=robot use_sim:=true"
+        - name: ROBOTNIK_RVIZ_ARGS
+          value: "robot_id:=robot use_sim:=true rviz_name:=rviz_nav"
+        command: ["/bin/bash", "-lc"]
+        args:
+        - |
+          set -eo pipefail
+          sleep 10
+          source /opt/ros/${ROS_DISTRO}/setup.bash
+          source /opt/robotnik_ws/install/setup.bash
+          if [ -f /opt/robotnik/config/env/robot.env ]; then
+            set -a
+            source /opt/robotnik/config/env/robot.env
+            set +a
+          fi
+          read -r -a nav_args <<< "${ROBOTNIK_LAUNCH_ARGS}"
+          read -r -a rviz_args <<< "${ROBOTNIK_RVIZ_ARGS}"
+          ros2 launch "${ROBOTNIK_LAUNCH_PACKAGE}" "${ROBOTNIK_LAUNCH_FILE}" "${nav_args[@]}" &
+          sleep 2
+          ros2 launch robotnik_simulation_bringup rviz.launch.py "${rviz_args[@]}"
+        volumeMounts:
+        - name: robot-env
+          mountPath: /opt/robotnik/config/env/robot.env
+          subPath: robot.env
+          readOnly: true
+        - name: x11-socket
+          mountPath: /tmp/.X11-unix
+        - name: dev-dri
+          mountPath: /dev/dri
+      volumes:
+      - name: robot-env
+        configMap:
+          name: robot-env-config
+      - name: x11-socket
+        hostPath:
+          path: /tmp/.X11-unix
+          type: DirectoryOrCreate
+      - name: dev-dri
+        hostPath:
+          path: /dev/dri
+          type: DirectoryOrCreate
+      - name: kubectl-bin
+        hostPath:
+          path: /usr/bin/kubectl
+          type: File
+
+---
+# ---------------------------------------------------------------------------
+# Deployment – manipulation
+# Runs MoveIt2 after navigation has started.
+# Equivalent to the "manipulation" service in docker-compose.yaml.
+# depends_on: navigation  →  initContainer sleep 90s
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: manipulation
+  labels:
+    app: manipulation
+    app.kubernetes.io/part-of: robotnik-simulation
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: manipulation
+  template:
+    metadata:
+      labels:
+        app: manipulation
+    spec:
+      hostNetwork: true
+      hostIPC: true
+      # nodeSelector:
+      #   nodetype: edgeserver
+      serviceAccountName: robotnik-deployer
+      initContainers:
+      - name: wait-for-navigation
+        image: busybox:stable
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - |
+          until /kubectl wait --for=condition=available --timeout=10s deployment/navigation 2>/dev/null; do
+            echo "Waiting for navigation to be available..."
+            sleep 5
+          done
+        volumeMounts:
+        - name: kubectl-bin
+          mountPath: /kubectl
+          readOnly: true
+      containers:
+      - name: manipulation
+        image: robotnik/simulation-gz:jazzy
+        imagePullPolicy: IfNotPresent
+        stdin: true
+        tty: true
+        securityContext:
+          privileged: true
+        env:
+        - name: DISPLAY
+          value: ":1"
+        - name: ROS_DISTRO
+          value: "jazzy"
+        - name: ROS_DOMAIN_ID
+          value: "30"
+        - name: WORKSPACE_DIR
+          value: "/opt/robotnik_ws"
+        - name: RUNTIME_AUTOSTART
+          value: "true"
+        - name: ROBOTNIK_ENV_FILE
+          value: "/opt/robotnik/config/env/robot.env"
+        - name: ROBOTNIK_LAUNCH_PACKAGE
+          value: "robotnik_simulation_moveit"
+        - name: ROBOTNIK_LAUNCH_FILE
+          value: "moveit.launch.py"
+        - name: ROBOTNIK_LAUNCH_ARGS
+          value: "robot_id:=robot robot:=rbkairos robot_model:=rbkairos_plus arm_type:=ur10e use_sim_time:=true run_moveit_rviz:=true"
+        command: ["/bin/bash", "-lc"]
+        args:
+        - "sleep 10 && exec /usr/local/bin/runtime-entrypoint.sh"
+        volumeMounts:
+        - name: robot-env
+          mountPath: /opt/robotnik/config/env/robot.env
+          subPath: robot.env
+          readOnly: true
+        - name: x11-socket
+          mountPath: /tmp/.X11-unix
+        - name: dev-dri
+          mountPath: /dev/dri
+      volumes:
+      - name: robot-env
+        configMap:
+          name: robot-env-config
+      - name: x11-socket
+        hostPath:
+          path: /tmp/.X11-unix
+          type: DirectoryOrCreate
+      - name: dev-dri
+        hostPath:
+          path: /dev/dri
+          type: DirectoryOrCreate
+      - name: kubectl-bin
+        hostPath:
+          path: /usr/bin/kubectl
+          type: File
