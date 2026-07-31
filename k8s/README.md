@@ -1,5 +1,9 @@
 # Robotnik Simulation – Kubernetes Deployment
 
+Before going through this readme follow first 
+**[this](https://github.com/fujitatomoya/ros_k8s/blob/main/docs/Install_Kubernetes_Packages.md)**
+ readme to install Kubernetes dependencies.
+
 This directory contains Kubernetes manifests that replicate the exact behaviour of
 `docker/docker-compose.yaml` for the Robotnik simulation stack.
 
