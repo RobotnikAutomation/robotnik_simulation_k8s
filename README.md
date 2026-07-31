@@ -59,6 +59,33 @@ That guide covers:
 - editing [`env/robot.env`](env/robot.env) to choose robot, world, GUI and RViz options
 - opening a second terminal with `docker exec` to interact with the running simulation from inside the runtime container
 
+### Kubernetes
+
+The simulation stack can also be deployed on a Kubernetes cluster, replicating the same
+services as the Docker Compose setup (Gazebo, localization, navigation, MoveIt2/RViz).
+
+**One-command launch:**
+
+```bash
+cd k8s/
+./run-simulation.sh
+```
+
+The script bootstraps the cluster (if needed), configures `kubectl`, grants X11 access,
+creates ConfigMaps and deploys all four services in the correct startup order:
+
+```
+simulation  ──ready──▶  localization  ──ready──▶  navigation  ──ready──▶  manipulation
+```
+
+First run or after a system reboot with lost cluster state:
+
+```bash
+./run-simulation.sh --reset
+```
+
+For full details, configuration options and troubleshooting see [`k8s/README.md`](k8s/README.md).
+
 ### Bringup
 
 Launch complete simulation:
