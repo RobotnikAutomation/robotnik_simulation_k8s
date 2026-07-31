@@ -144,7 +144,34 @@ nodeSelector:
 
 ---
 
-## Deployment
+## Quick start
+
+To run everything in one command:
+
+```bash
+cd k8s/
+./run-simulation.sh
+```
+
+The script handles all steps automatically:
+1. Bootstraps the cluster via `setup-cluster.sh` (only if not already initialised)
+2. Copies the kubeconfig to `$HOME/.kube/config`
+3. Runs `xhost +local:` and patches `DISPLAY` if needed
+4. Creates ConfigMaps from local files
+5. Applies `robotnik-simulation.yaml`
+6. Waits for the simulation pod to become available
+
+**First run or after a system reboot with lost cluster state** — add `--reset` to wipe and re-initialise:
+
+```bash
+./run-simulation.sh --reset
+```
+
+> The script requires `sudo` only for the cluster bootstrap steps. If the cluster is already running it skips setup entirely.
+
+---
+
+## Step-by-step deployment
 
 ### Step 1 – Create ConfigMaps
 
