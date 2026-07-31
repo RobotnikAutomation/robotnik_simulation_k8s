@@ -54,3 +54,7 @@ repositories:
     type: git
     url: https://github.com/RobotnikAutomation/teleop_panel.git
     version: 21d3e5335366390d0c79acb9875a1839236afe3d
+  robotnik/ros_k8s:
+    type: git
+    url: https://github.com/fujitatomoya/ros_k8s.git
+    version: main
