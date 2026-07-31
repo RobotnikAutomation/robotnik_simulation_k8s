@@ -84,6 +84,12 @@ First run or after a system reboot with lost cluster state:
 ./run-simulation.sh --reset
 ```
 
+Graceful stop:
+
+```bash
+./stop-simulation.sh
+```
+
 For full details, configuration options and troubleshooting see [`k8s/README.md`](k8s/README.md).
 
 ### Bringup

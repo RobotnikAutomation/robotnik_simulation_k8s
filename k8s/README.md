@@ -153,6 +153,12 @@ cd k8s/
 ./run-simulation.sh
 ```
 
+To stop everything gracefully in one command:
+
+```bash
+./stop-simulation.sh
+```
+
 The script handles all steps automatically:
 1. Bootstraps the cluster via `setup-cluster.sh` (only if not already initialised)
 2. Copies the kubeconfig to `$HOME/.kube/config`
@@ -317,6 +323,17 @@ to be installed in the cluster.
 ---
 
 ## Teardown
+
+### Graceful stop script (recommended)
+
+```bash
+# Graceful shutdown in reverse dependency order:
+# manipulation -> navigation -> localization -> simulation
+./stop-simulation.sh
+
+# Optional cleanup flags
+./stop-simulation.sh --delete --purge-configmaps
+```
 
 ### Remove workloads only (cluster stays running)
 
